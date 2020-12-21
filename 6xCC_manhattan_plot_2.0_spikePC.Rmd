@@ -1,0 +1,229 @@
+---
+title: "GWAS for principal components of spike traits"
+author: "Yoshio"
+date: "`r format(Sys.time(), '%Y/%m/%d')`"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      fig.width = 6, fig.height= 3, out.width = 600)
+library(tidyverse)
+library(pipeR)
+library(stringr)
+library(readr)
+library(scales)
+```
+
+## Spike shape GWAS data
+
+* 6x core collection 185 lines; 
+
+Genotype details are in [Takenaka et al.](https://www.jstage.jst.go.jp/article/ggs/93/6/93_18-00041/_article/-char/ja). 
+__marker positions were re-determined by blasting tag sequence to CSrefseq 2.0.__ 
+
+
+Phenotypes are measured by vernier caliper in the roofed field of Kobe University in 2013 spring. Phenotypic value of each trait is the average of 6 measurements (3 spikes from 2 plants). 
+
+* 5 accessions were omitted from a set of 190 accessions;
+    * 164 Nambukomugi no genotype
+    * 162 Hokushin no genotype
+    * 174 Kitahonami no genotype
+    * 141 Ethiopian local no genotype
+    * 193 Bobwhite no phenotype
+
+
+Then we conducted Principal Component Analysis from the following traits;
+
+* Spike Length
+* Lemma Length
+* Lemma Width
+* Glume Length
+* Glume Width
+* Spikelet Length
+* Top Awn Length
+* Middle Awn Length
+* Middle Awn Length (first floret)
+* Ratio of Top Awn Length to Middle Awn Length
+* Awn Bentness
+
+
+We omit the following traits before PC analysis because they are difficult to handle;  
+  * ALmidfirst (awn length in at the first floret of the spikelet in the middle of the spike )  
+  * Awn_bentness
+  * ALtop_to_mid (ratio of the length of awn length at the top of the spike and that at the middle of the spike)  
+
+
+Genome-wide association analysis
+* TASSEL v5.2.58
+  * marker filtering:  
+    * missing data < 20% (more than 148 individual genotyped),  
+    * minor allele frequency > 5%
+    * heterozygous marker frequency < 5%  
+  * GLM+PCA
+  * MLM+PCA+K
+
+
+Read the result files
+
+```{r read.spkpca.result, message=FALSE, cache=TRUE, cache.extra=file.mtime("6xCC_spike_PCA_result/v2.0/Spike_PCA_2.0_GLM-PCA_1000perm_stats.txt", "6xCC_spike_PCA_result/v2.0/Spike_PCA_2.0_MLM-PCA-K_stats.txt")}
+# prepare levels of phenotype to read them as factors
+pheno.levels.pc = c("spikePC_1", "spikePC_2", "spikePC_3", "spikePC_4", "spikePC_5", "spikePC_6", "spikePC_7", "spikePC_8")
+
+# read GLM result
+spkpc.glm.stat = read_delim(file =                 "6xCC_spike_PCA_result/v2.0/Spike_PCA_2.0_GLM-PCA_1000perm_stats.txt", 
+                          delim = "\t") %>>%
+  dplyr::mutate(Trait = factor(.$Trait, levels = pheno.levels.pc, ordered = TRUE))
+
+# read MLM result
+spkpc.mlm.stat = read_delim(file = "6xCC_spike_PCA_result/v2.0/Spike_PCA_2.0_MLM-PCA-K_stats.txt", 
+                          delim = "\t") %>>%
+  dplyr::mutate(Trait = factor(.$Trait, levels = pheno.levels.pc, ordered = TRUE))
+
+
+# read chromosome length file (quoted from CSrefseq v1.0 by blastcmd)
+csref = read_delim(file = "CSrefseq_2.0_detail.txt", delim = " ", col_names = c("blastcmd", "Chr", "chr_length"))
+# show
+csref
+```
+
+Arrange the data according to https://www.r-graph-gallery.com/101_Manhattan_plot.html
+
+Add the column of cumulative marker pisition.
+
+```{r edit.result, cache=TRUE, dependson="read.spkpca.result"}
+# arrange GLM result
+spkpc.glm.man <- spkpc.glm.stat %>>%
+  # add cumulative chromosome length : cum_total
+  dplyr::group_by(Chr) %>>%
+  dplyr::summarise(distal_mar_pos = max(Pos)) %>>%
+  dplyr::mutate(chr_len = csref$chr_length) %>>%
+  dplyr::mutate(cum_total = cumsum(chr_len) - chr_len) %>>%
+  # add this info to the initial dataset
+  dplyr::left_join(spkpc.glm.stat, ., by = c("Chr" = "Chr")) %>>%
+  # add genome
+  dplyr::mutate(genome = str_sub(Chr, start = 2, end = 2)) %>>%
+  dplyr::arrange(Chr, Pos) %>>%
+  dplyr::mutate(cumulative_pos = Pos + cum_total)
+
+# arrange MLM result
+spkpc.mlm.man <- spkpc.mlm.stat %>>%
+  #remove the rows with df = 0; prpbably these are errors
+  dplyr::filter((df != 0)) %>>%
+ # add cumulative chromosome length : cum_total
+  dplyr::group_by(Chr) %>>%
+  dplyr::summarise(distal_mar_pos = max(Pos)) %>>%
+  dplyr::mutate(chr_len = csref$chr_length) %>>%
+  dplyr::mutate(cum_total = cumsum(chr_len) - chr_len) %>>%
+  # add this info to the initial dataset
+  dplyr::left_join(spkpc.mlm.stat, ., by = c("Chr" = "Chr")) %>>%
+  # add genome
+  dplyr::mutate(genome = str_sub(Chr, start = 2, end = 2)) %>>%
+  dplyr::arrange(Chr, Pos) %>>%
+  dplyr::mutate(cumulative_pos = Pos + cum_total)
+  
+
+# check if there are marker mismatch between GLM and MLM
+dplyr::anti_join(spkpc.glm.man, spkpc.mlm.man, by = "Marker")
+dplyr::anti_join(spkpc.mlm.man, spkpc.glm.man, by = "Marker")
+
+```
+
+Then we need to prepare the X axis. Indeed we do not want to display the cumulative position of SNP in bp, but just show the chromosome name instead.
+
+```{r axis.labeling}
+axisdf <- spkpc.glm.man %>>% 
+  dplyr::group_by(Chr) %>>%
+  dplyr::summarize(center = (max(cumulative_pos) + min(cumulative_pos)) / 2 )
+
+# confirm the center position x2 equals chromosome total length
+# errors smaller than 10 bp is tolerated 
+dplyr::left_join(axisdf, csref, by = c("Chr" = "Chr")) %>>%
+  dplyr::mutate(centerx2 = 2*.$center) %>>%
+  dplyr::filter(!(abs(centerx2 - chr_length) < 10))
+```
+
+Prepare significance level
+
+```{r p.bonf}
+# prepare significance level with Bonferroni correction
+# count the number of marker (row numnber / traint number)
+n.mar = nrow(spkpc.glm.man)/(nlevels(spkpc.glm.man$Trait))
+n.mar
+
+# p = 0.05
+bonf.loose = 0.05/n.mar
+# p= 0.01
+bonf.tight = 0.01/n.mar
+```
+
+
+
+## Manhattan plot
+
+### Prepare drawing function
+
+```{r draw.fanc.}
+# define a function that generates manhattan plot from the above datatable with the columns of chromosome name (Chr), cumulative marker position (cumulative_pos), and p-value.
+ggplot.man.pc <- function(g){
+p <- g %>>%
+    dplyr::filter(Trait == pheno.levels.pc[i]) %>>%
+    ggplot(aes(x = cumulative_pos, y = -log10(p))) +
+    geom_point(aes(color = Chr), alpha = 0.8, size = 1.3) +
+    # add sicnificance level
+    geom_hline(yintercept = -log10(bonf.loose), linetype = "dashed") +
+    geom_hline(yintercept = -log10(bonf.tight)) +
+    scale_color_manual(
+      values = c(rep(c("firebrick3", "dodgerblue4", "chartreuse4"),7),"darkorchid3"),
+      name = "Genome") +
+    scale_x_continuous(name = "Chromosome",
+                       label = axisdf$Chr,
+                       breaks = axisdf$center,
+                       expand = c(0,0)) + # remove space between plot area and y axis
+    scale_y_continuous(expand = expand_scale(mult = c(0, 0.1))) + # remove space between plot area and x axis while keeping top space
+# custom the theme
+  labs(title = pheno.levels.pc[i])+ 
+  theme_bw() +
+  theme(
+    plot.title = element_text(size = 15), 
+    legend.position = "none",
+    panel.border = element_blank(),# delete frame
+    axis.line = element_line(color = "black"),
+    )
+plot(p)
+}
+
+```
+
+
+### General Linear Model
+
+```{r spkpc.manhattan.glm, warning=FALSE, cache=TRUE, dependson="edit.result"}
+# GLM
+for(i in 1:nlevels(as.factor(pheno.levels.pc))){
+ggplot.man.pc(spkpc.glm.man)
+}
+```
+
+### Mixed Linear Model
+
+```{r spkpc.manhattan.mlm, warning=FALSE, cache=TRUE, dependson="edit.result"}
+# MLM
+for(i in 1:nlevels(as.factor(pheno.levels.pc))){
+ggplot.man.pc(spkpc.mlm.man)
+}
+```
+
+### Extract significant SNPs
+
+```{r significant}
+spkpc.sig.snp <- spkpc.glm.man %>>%
+  dplyr::mutate(analysis = "GLM") %>>%
+  full_join(spkpc.mlm.man %>>%
+          dplyr::mutate(analysis = "MLM")) %>>%
+  dplyr::filter(p < bonf.loose)
+
+write_csv(spkpc.sig.snp, "6xcc_Spike_PCA_2.0_significant_snp.csv")
+
+```
+
