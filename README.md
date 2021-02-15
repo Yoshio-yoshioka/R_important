@@ -1,2 +1,2 @@
 # R_important
-R scripts that were useful to me.
+R scripts that were useful for genomic analyses.
